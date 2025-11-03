@@ -1,6 +1,47 @@
 fn hit_sphere(center: vec3f, radius: f32, r: ray, record: ptr<function, hit_record>, max: f32)
 {
+  // Vector from ray origin to sphere center
+  var oc = r.origin - center;
+  
+  // Quadratic equation coefficients for ray-sphere intersection
+  // Ray equation: P(t) = origin + t * direction
+  // Sphere equation: |P - center|² = radius²
+  var a = dot(r.direction, r.direction);     // ||direction||²
+  var half_b = dot(oc, r.direction);         // half of b coefficient (optimization)
+  var c = dot(oc, oc) - radius * radius;    // ||oc||² - radius²
+  
+  // Calculate discriminant to check if ray intersects sphere
+  var discriminant = half_b * half_b - a * c;
 
+  // No intersection if discriminant is negative
+  if (discriminant < 0.0)
+  {
+    record.hit_anything = false;
+    return;
+  }
+
+  // Calculate both possible intersection points
+  var sqrtd = sqrt(discriminant);
+  
+  // Try the closer intersection point first
+  var root = (-half_b - sqrtd) / a;
+  if (root < RAY_TMIN || root > max)
+  {
+    // If closer point is invalid, try the farther intersection point
+    root = (-half_b + sqrtd) / a;
+    if (root < RAY_TMIN || root > max)
+    {
+      // Both intersection points are outside valid t range
+      record.hit_anything = false;
+      return;
+    }
+  }
+
+  // Record the valid intersection
+  record.t = root;                                    // Parameter t where intersection occurs
+  record.p = ray_at(r, root);                        // 3D point of intersection
+  record.normal = (record.p - center) / radius;      // Unit normal vector at intersection
+  record.hit_anything = true;                        // Mark that we found a valid hit
 }
 
 fn hit_quad(r: ray, Q: vec4f, u: vec4f, v: vec4f, record: ptr<function, hit_record>, max: f32)
