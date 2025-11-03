@@ -159,31 +159,161 @@ fn check_ray_collision(r: ray, max: f32) -> hit_record
   var trianglesCount = i32(uniforms[22]);
   var meshCount = i32(uniforms[27]);
 
-  var record = hit_record(RAY_TMAX, vec3f(0.0), vec3f(0.0), vec4f(0.0), vec4f(0.0), false, false);
-  var closest = record;
+  var closest = hit_record(RAY_TMAX, vec3f(0.0), vec3f(0.0), vec4f(0.0), vec4f(0.0), false, false);
+  var closest_so_far = max;
+
+  // Test all spheres
+  for (var i = 0; i < spheresCount; i = i + 1)
+  {
+    var sphere = spheresb[i];
+    var temp_record = hit_record(RAY_TMAX, vec3f(0.0), vec3f(0.0), vec4f(0.0), vec4f(0.0), false, false);
+
+    hit_sphere(sphere.transform.xyz, sphere.transform.w, r, &temp_record, closest_so_far);
+
+    if (temp_record.hit_anything && temp_record.t < closest_so_far) {
+      closest_so_far = temp_record.t;
+      closest = temp_record;
+      closest.object_color = sphere.color;
+      closest.object_material = sphere.material;
+    }
+  }
+
+  // Test all quads
+  for (var i = 0; i < quadsCount; i = i + 1)
+  {
+    var quad = quadsb[i];
+    var temp_record = hit_record(RAY_TMAX, vec3f(0.0), vec3f(0.0), vec4f(0.0), vec4f(0.0), false, false);
+
+    hit_quad(r, quad.Q, quad.u, quad.v, &temp_record, closest_so_far);
+
+    if (temp_record.hit_anything && temp_record.t < closest_so_far) {
+      closest_so_far = temp_record.t;
+      closest = temp_record;
+      closest.object_color = quad.color;
+      closest.object_material = quad.material;
+    }
+  }
+
+  // Test all boxes
+  for (var i = 0; i < boxesCount; i = i + 1)
+  {
+    var box = boxesb[i];
+    var temp_record = hit_record(RAY_TMAX, vec3f(0.0), vec3f(0.0), vec4f(0.0), vec4f(0.0), false, false);
+
+    hit_box(r, box.center.xyz, box.radius.xyz, &temp_record, closest_so_far);
+
+    if (temp_record.hit_anything && temp_record.t < closest_so_far) {
+      closest_so_far = temp_record.t;
+      closest = temp_record;
+      closest.object_color = box.color;
+      closest.object_material = box.material;
+    }
+  }
+
+  // Test all triangles
+  for (var i = 0; i < trianglesCount; i = i + 1)
+  {
+    var triangle = trianglesb[i];
+    var temp_record = hit_record(RAY_TMAX, vec3f(0.0), vec3f(0.0), vec4f(0.0), vec4f(0.0), false, false);
+
+    hit_triangle(r, triangle.v0.xyz, triangle.v1.xyz, triangle.v2.xyz, &temp_record, closest_so_far);
+
+    if (temp_record.hit_anything && temp_record.t < closest_so_far) {
+      closest_so_far = temp_record.t;
+      closest = temp_record;
+    }
+  }
 
   return closest;
 }
 
 fn lambertian(normal : vec3f, absorption: f32, random_sphere: vec3f, rng_state: ptr<function, u32>) -> material_behaviour
 {
-  return material_behaviour(true, vec3f(0.0));
+  // Scatter direction: normal + random unit vector
+  var scatter_direction = normal + random_sphere;
+
+  // Catch degenerate scatter direction (when random_sphere ≈ -normal)
+  if (abs(scatter_direction.x) < 1e-8 && abs(scatter_direction.y) < 1e-8 && abs(scatter_direction.z) < 1e-8) {
+    scatter_direction = normal;
+  }
+
+  return material_behaviour(true, normalize(scatter_direction));
 }
 
 fn metal(normal : vec3f, direction: vec3f, fuzz: f32, random_sphere: vec3f) -> material_behaviour
 {
-  return material_behaviour(false, vec3f(0.0));
+  // Reflect the ray direction around the normal
+  var reflected = reflect(direction, normal);
+  // Add some fuzziness
+  var scattered = reflected + fuzz * random_sphere;
+  // Check if the scattered ray is in the same hemisphere as the normal
+  if (dot(scattered, normal) > 0.0) {
+    return material_behaviour(true, normalize(scattered));
+  } else {
+    return material_behaviour(false, vec3f(0.0));
+  }
 }
 
+// Schlick's approximation for Fresnel reflectance
+// Calculates how much light reflects vs refracts at different angles
+// Glass reflects more at grazing angles (like looking at a window from the side)
+fn fresnel_schlick(cos: f32, ref_idx: f32) -> f32
+{
+  // R0 is the reflectance at normal incidence (looking straight at surface)
+  var r0 = (1.0 - ref_idx) / (1.0 + ref_idx);
+  r0 = r0 * r0;
+  // Schlick's polynomial approximation: R(θ) = R0 + (1-R0)(1-cos(θ))^5
+  return r0 + (1.0 - r0) * pow((1.0 - cos), 5.0);
+}
+
+// Dielectric material (glass, water, diamond, etc.)
+// Handles both reflection and refraction based on physics
 fn dielectric(normal : vec3f, r_direction: vec3f, refraction_index: f32, frontface: bool, random_sphere: vec3f, fuzz: f32, rng_state: ptr<function, u32>) -> material_behaviour
-{  
-  return material_behaviour(false, vec3f(0.0));
+{
+  // Determine the refraction ratio based on whether ray is entering or exiting
+  var ri: f32;
+  if (frontface) {
+    // Ray entering the material (air -> glass)
+    ri = 1.0 / refraction_index;  // e.g., 1.0/1.5 for air->glass
+  } else {
+    // Ray exiting the material (glass -> air)
+    ri = refraction_index;  // e.g., 1.5 for glass->air
+  }
+
+  var unit_direction = normalize(r_direction);
+
+  // Calculate angle between ray and normal
+  // cos_theta tells us how perpendicular the ray hits the surface
+  var cos = min(dot(-unit_direction, normal), 1.0);
+  var sin = sqrt(1.0 - cos * cos);  // Pythagorean identity
+
+  // Check for total internal reflection
+  // This happens when trying to go from dense->less dense at shallow angles
+  // Example: light can't escape water at angles > critical angle
+  var cannot_refract = ri * sin > 1.0;
+  var direction: vec3f;
+
+  if (cannot_refract || fresnel_schlick(cos, ri) > rng_next_float(rng_state)) {
+    // Reflect: Either total internal reflection, or random Fresnel reflection
+    direction = reflect(unit_direction, normal);
+  } else {
+    // Refract: Ray bends according to Snell's law
+    direction = refract(unit_direction, normal, ri);
+  }
+
+  // Add fuzziness for frosted glass effect (when fuzz > 0)
+  if (fuzz > 0.0) {
+    direction = direction + fuzz * random_sphere;
+  }
+
+  return material_behaviour(true, normalize(direction));
 }
 
 fn emmisive(color: vec3f, light: f32) -> material_behaviour
 {
   return material_behaviour(false, vec3f(0.0));
 }
+
 
 fn trace(r: ray, rng_state: ptr<function, u32>) -> vec3f
 {
