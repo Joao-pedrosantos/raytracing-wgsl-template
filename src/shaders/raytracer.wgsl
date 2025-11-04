@@ -335,9 +335,18 @@ fn trace(r: ray, rng_state: ptr<function, u32>) -> vec3f
       break;
     }
 
-    if (record.object_material.x == 1.0) {
-      // Pure diffuse (Lambertian)
-      behaviour = lambertian(record.normal, record.object_material.y, rng_next_vec3_in_unit_sphere(rng_state), rng_state);
+    // Check if emissive (light source) - material.w > 0
+    if (record.object_material.w > 0.0) {
+      // Emissive (light source)
+      var emission_strength = record.object_material.w;
+      light += color * record.object_color.xyz * emission_strength;
+      break;
+    }
+    
+    if (record.object_material.x < 0.0) {
+      // Dielectric (glass, water, etc.) - negative material.x value
+      var refraction_index = 1.5; // Default glass refraction index
+      behaviour = dielectric(record.normal, r_.direction, refraction_index, record.frontface, rng_next_vec3_in_unit_sphere(rng_state), record.object_material.z, rng_state);
 
       if (behaviour.scatter) {
         color *= record.object_color.xyz;
@@ -346,17 +355,14 @@ fn trace(r: ray, rng_state: ptr<function, u32>) -> vec3f
         break;
       }
 
-    } else if (record.object_material.x == 2.0) {
-      // Metal with diffuse/specular blend for realism
-      var fuzz = record.object_material.y;
+    } else if (record.object_material.x > 0.0) {
+      // Metal - positive material.x value
+      var fuzz = record.object_material.z;
 
       // Calculate specular component (metal reflection)
       var specular_behaviour = metal(record.normal, r_.direction, fuzz, rng_next_vec3_in_unit_sphere(rng_state));
 
       if (specular_behaviour.scatter) {
-        // Calculate diffuse component
-        var diffuse_behaviour = lambertian(record.normal, 0.0, rng_next_vec3_in_unit_sphere(rng_state), rng_state);
-
         // Blend between diffuse color and specular (white) reflection
         // Lower fuzz = more specular (mirror-like), higher fuzz = more diffuse
         var metalness = 1.0 - fuzz;  // 0.0 = diffuse, 1.0 = pure specular
@@ -368,9 +374,9 @@ fn trace(r: ray, rng_state: ptr<function, u32>) -> vec3f
         break;
       }
 
-    } else if (record.object_material.x == 3.0) {
-      // Dielectric (glass, water, etc.)
-      behaviour = dielectric(record.normal, r_.direction, record.object_material.y, record.frontface, rng_next_vec3_in_unit_sphere(rng_state), record.object_material.z, rng_state);
+    } else {
+      // Lambertian (diffuse) - material.x == 0.0
+      behaviour = lambertian(record.normal, record.object_material.y, rng_next_vec3_in_unit_sphere(rng_state), rng_state);
 
       if (behaviour.scatter) {
         color *= record.object_color.xyz;
@@ -378,12 +384,6 @@ fn trace(r: ray, rng_state: ptr<function, u32>) -> vec3f
       } else {
         break;
       }
-
-    } else if (record.object_material.x == 4.0) {
-      // Emissive (light source)
-      behaviour = emmisive(record.object_color.xyz, record.object_material.y);
-      light += color * record.object_color.xyz;
-      break;
     }
   }
 
