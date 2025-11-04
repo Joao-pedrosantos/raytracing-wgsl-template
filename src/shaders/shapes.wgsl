@@ -1,3 +1,15 @@
+fn set_face_normal(r: ray, outward_normal: vec3f, record: ptr<function, hit_record>)
+{
+  // Determine if ray hit the front face (outside) or back face (inside)
+  record.frontface = dot(r.direction, outward_normal) < 0.0;
+  // Make normal always point against the ray direction
+  if (record.frontface) {
+    record.normal = outward_normal;
+  } else {
+    record.normal = -outward_normal;
+  }
+}
+
 fn hit_sphere(center: vec3f, radius: f32, r: ray, record: ptr<function, hit_record>, max: f32)
 {
   // Vector from ray origin to sphere center
@@ -40,7 +52,8 @@ fn hit_sphere(center: vec3f, radius: f32, r: ray, record: ptr<function, hit_reco
   // Record the valid intersection
   record.t = root;                                    // Parameter t where intersection occurs
   record.p = ray_at(r, root);                        // 3D point of intersection
-  record.normal = (record.p - center) / radius;      // Unit normal vector at intersection
+  var outward_normal = (record.p - center) / radius;  // Unit normal vector at intersection
+  set_face_normal(r, outward_normal, record);        // Set normal and frontface
   record.hit_anything = true;                        // Mark that we found a valid hit
 }
 
@@ -76,15 +89,9 @@ fn hit_quad(r: ray, Q: vec4f, u: vec4f, v: vec4f, record: ptr<function, hit_reco
     return;
   }
 
-  if (dot(normal, r.direction) > 0.0)
-  {
-    record.hit_anything = false;
-    return;
-  }
-
   record.t = t;
   record.p = intersection;
-  record.normal = normal;
+  set_face_normal(r, normal, record);
   record.hit_anything = true;
 }
 
@@ -117,7 +124,8 @@ fn hit_triangle(r: ray, v0: vec3f, v1: vec3f, v2: vec3f, record: ptr<function, h
 
   record.t = t;
   record.p = ray_at(r, t);
-  record.normal = normalize(n);
+  var outward_normal = normalize(n);
+  set_face_normal(r, outward_normal, record);
   record.hit_anything = true;
 }
 
@@ -148,7 +156,8 @@ fn hit_box(r: ray, center: vec3f, rad: vec3f, record: ptr<function, hit_record>,
 
   record.t = t;
   record.p = ray_at(r, t);
-  record.normal = -sign(r.direction) * step(t1.yzx, t1.xyz) * step(t1.zxy, t1.xyz);
+  var outward_normal = -sign(r.direction) * step(t1.yzx, t1.xyz) * step(t1.zxy, t1.xyz);
+  set_face_normal(r, outward_normal, record);
   record.hit_anything = true;
 
   return;
