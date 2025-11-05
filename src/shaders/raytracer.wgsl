@@ -195,7 +195,7 @@ fn check_ray_collision(r: ray, max: f32) -> hit_record
   }
 
   // Test all boxes
-  for (var i = 0; i < boxesCount; i = i + 1)
+  for (var i = 0; i < quadsCount; i = i + 1)
   {
     var box = boxesb[i];
     var temp_record = hit_record(RAY_TMAX, vec3f(0.0), vec3f(0.0), vec4f(0.0), vec4f(0.0), false, false);
@@ -244,7 +244,7 @@ fn metal(normal : vec3f, direction: vec3f, fuzz: f32, random_sphere: vec3f) -> m
 {
   // Reflect the ray direction around the normal
   var reflected = reflect(direction, normal);
-  // Add some fuzziness
+  // Add some fuzziness - but keep it subtle
   var scattered = reflected + fuzz * random_sphere;
   // Check if the scattered ray is in the same hemisphere as the normal
   if (dot(scattered, normal) > 0.0) {
@@ -268,7 +268,7 @@ fn fresnel_schlick(cos: f32, ref_idx: f32) -> f32
 
 // Dielectric material (glass, water, diamond, etc.)
 // Handles both reflection and refraction based on physics
-fn dielectric(normal : vec3f, r_direction: vec3f, refraction_index: f32, frontface: bool, random_sphere: vec3f, fuzz: f32, rng_state: ptr<function, u32>) -> material_behaviour
+fn dielectric(normal : vec3f, r_direction: vec3f, refraction_index: f32, frontface: bool, fuzz: f32, rng_state: ptr<function, u32>) -> material_behaviour
 {
   // Determine the refraction ratio based on whether ray is entering or exiting
   var ri: f32;
@@ -301,11 +301,11 @@ fn dielectric(normal : vec3f, r_direction: vec3f, refraction_index: f32, frontfa
     direction = refract(unit_direction, normal, ri);
   }
 
-  // Add fuzziness for frosted glass effect (when fuzz > 0)
-  if (fuzz > 0.0) {
-    direction = direction + fuzz * random_sphere;
-  }
-
+  // IMPORTANT: For clear glass, we should NOT add any fuzziness
+  // Only add fuzz for frosted glass effect
+  // For now, completely ignore fuzz for dielectrics to get clear glass
+  // If you want frosted glass later, use a very small value like fuzz * 0.01
+  
   return material_behaviour(true, normalize(direction));
 }
 
@@ -345,11 +345,24 @@ fn trace(r: ray, rng_state: ptr<function, u32>) -> vec3f
     
     if (record.object_material.x < 0.0) {
       // Dielectric (glass, water, etc.) - negative material.x value
-      var refraction_index = 1.5; // Default glass refraction index
-      behaviour = dielectric(record.normal, r_.direction, refraction_index, record.frontface, rng_next_vec3_in_unit_sphere(rng_state), record.object_material.z, rng_state);
+      var refraction_index = abs(record.object_material.x); // Use the absolute value as the refraction index
+      if (refraction_index < 1.1) {
+        refraction_index = 1.5; // Default to glass if not specified
+      }
+      
+      // For clear glass, pass 0.0 as fuzz or a very small value
+      // Only use material.z for frosted glass effects
+      var glass_fuzz = 0.0; // For perfectly clear glass
+      // Uncomment the line below if you want slight frosting based on material.z
+      // var glass_fuzz = record.object_material.z * 0.01; 
+      
+      behaviour = dielectric(record.normal, r_.direction, refraction_index, record.frontface, glass_fuzz, rng_state);
 
       if (behaviour.scatter) {
-        color *= record.object_color.xyz;
+        // Glass should be mostly clear - don't tint the light passing through
+        // For colored glass, you can add a small tint
+        // color *= record.object_color.xyz; // For colored glass
+        // For clear glass, don't modify the color at all
         r_ = ray(record.p, behaviour.direction);
       } else {
         break;
@@ -358,18 +371,19 @@ fn trace(r: ray, rng_state: ptr<function, u32>) -> vec3f
     } else if (record.object_material.x > 0.0) {
       // Metal - positive material.x value
       var fuzz = record.object_material.z;
+      
+      // Clamp fuzz to reasonable values for realistic metals
+      // Most metals should have fuzz between 0.0 (mirror) and 0.3 (brushed metal)
+      fuzz = clamp(fuzz, 0.0, 0.5);
 
-      // Calculate specular component (metal reflection)
-      var specular_behaviour = metal(record.normal, r_.direction, fuzz, rng_next_vec3_in_unit_sphere(rng_state));
+      // Calculate metal reflection
+      var metal_behaviour = metal(record.normal, r_.direction, fuzz, rng_next_vec3_in_unit_sphere(rng_state));
 
-      if (specular_behaviour.scatter) {
-        // Blend between diffuse color and specular (white) reflection
-        // Lower fuzz = more specular (mirror-like), higher fuzz = more diffuse
-        var metalness = 1.0 - fuzz;  // 0.0 = diffuse, 1.0 = pure specular
-        var blended_color = mix(record.object_color.xyz, vec3f(1.0), metalness);
-
-        color *= blended_color;
-        r_ = ray(record.p, specular_behaviour.direction);
+      if (metal_behaviour.scatter) {
+        // IMPORTANT: Metals should use their own color, not blend with white
+        // Pure metals reflect with their own color
+        color *= record.object_color.xyz;
+        r_ = ray(record.p, metal_behaviour.direction);
       } else {
         break;
       }
