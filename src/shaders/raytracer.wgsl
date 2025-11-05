@@ -442,17 +442,19 @@ fn render(@builtin(global_invocation_id) id : vec3u)
 
   color /= f32(samples_per_pixel); // Average by dividing by sample count
 
-  var color_out = vec4(linear_to_gamma(color), 1.0);
   var map_fb = mapfb(id.xy, rez);
-  
+
+  var color_out = vec4(color, 1.0);
   // Handle accumulation
   var should_accumulate = uniforms[3];
   if (should_accumulate > 0.0) {
-    var prev_color = rtfb[map_fb];
-    color_out = mix(prev_color, color_out, 1.0 / (f32(time) + 1.0));
+    rtfb[map_fb] += vec4(color, 1.0);
+    color_out = vec4(rtfb[map_fb].xyz / rtfb[map_fb].w, 1.0);
+  } //xyz representa rgb e w alpha 
+  else
+  {
+    rtfb[map_fb] = vec4(color, 1.0);
   }
-
   // Set the color to the framebuffer
-  rtfb[map_fb] = color_out;
-  fb[map_fb] = color_out;
+  fb[map_fb] = vec4(linear_to_gamma(color_out.xyz), 1.0);
 }
