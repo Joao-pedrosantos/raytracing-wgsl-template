@@ -369,42 +369,37 @@ fn trace(r: ray, rng_state: ptr<function, u32>) -> vec3f
 
     } else if (record.object_material.x > 0.0) {
       // Metal - positive material.x value
-      // material.y = reflectivity (0.0 - 1.0)
-      //   - 1.0 = espelho perfeito (100% reflexivo)
-      //   - 0.95 = espelho realista (95% reflexivo)
-      //   - 0.5-0.8 = metal colorido (ouro, cobre, bronze)
-      //   - 0.0-0.5 = metal com forte tinting
-      // material.z = fuzz/roughness (0.0 = liso, 0.5 = rugoso)
-      
-      var fuzz = record.object_material.z;
-      var reflectivity = record.object_material.y;
-      
-      // Clamp fuzz to reasonable values for realistic metals
-      fuzz = clamp(fuzz, 0.0, 0.5);
-      
-      // Default reflectivity to 1.0 if not set (espelho perfeito)
-      if (reflectivity < 0.01) {
-        reflectivity = 1.0;
+      // material.y = reflectivity/fuzz control (varies by scene)
+      // material.z = fuzz/roughness (0.0 = liso, 1.0 = muito rugoso)
+
+      var fuzz_raw = record.object_material.z;
+      var param_y = record.object_material.y;
+
+      // Intelligently determine fuzz value
+      // Use material.y as the primary fuzz controller if material.z is maxed out
+      var fuzz: f32;
+      if (fuzz_raw > 0.9) {
+        // When material.z is high (0.9-1.0), use material.y as fuzz controller
+        fuzz = param_y;
+      } else {
+        // Otherwise use material.z directly
+        fuzz = fuzz_raw;
       }
+
+      // Clamp fuzz to prevent unrealistic values
+      // 0.0 = perfect mirror, 0.3 = slightly rough metal, 0.5 = very rough
+      fuzz = clamp(fuzz, 0.0, 0.5);
 
       // Calculate metal reflection
       var metal_behaviour = metal(record.normal, r_.direction, fuzz, rng_next_vec3_in_unit_sphere(rng_state));
 
       if (metal_behaviour.scatter) {
-        // Sistema flexível de reflexão baseado em reflectivity
-        if (reflectivity >= 0.99) {
-          // Espelho perfeito - sem absorção
-          // color permanece inalterado (100% reflexivo)
-        } else if (reflectivity >= 0.9) {
-          // Metal muito reflexivo - absorção mínima
-          color *= vec3(reflectivity);
-        } else {
-          // Metal colorido - mistura cor do objeto com branco
-          // Quanto maior reflectivity, mais próximo de branco (mais reflexivo)
-          var metal_albedo = mix(record.object_color.xyz, vec3(1.0), reflectivity);
-          color *= metal_albedo;
-        }
-        
+        // For metals, apply the object color as tint
+        // Less fuzz = more reflective appearance
+        var reflectance = 1.0 - fuzz * 0.5;
+        var metal_albedo = mix(record.object_color.xyz, vec3(1.0), reflectance);
+        color *= metal_albedo;
+
         r_ = ray(record.p, metal_behaviour.direction);
       } else {
         break;
