@@ -268,16 +268,25 @@ fn fresnel_schlick(cos: f32, ref_idx: f32) -> f32
 
 // Dielectric material (glass, water, diamond, etc.)
 // Handles both reflection and refraction based on physics
+// CORRIGIDO: Agora suporta esferas ocas corretamente
 fn dielectric(normal : vec3f, r_direction: vec3f, refraction_index: f32, frontface: bool, fuzz: f32, rng_state: ptr<function, u32>) -> material_behaviour
 {
-  // Determine the refraction ratio based on whether ray is entering or exiting
+  // CORREÇÃO PRINCIPAL: Para esfera oca de vidro
+  // - Esfera externa: refraction_index = 1.5 (vidro normal)
+  // - Esfera interna: refraction_index = 1.0/1.5 = 0.67 (transição vidro->ar)
+  
+  // O índice de refração é passado como material.x (negativo para dielétrico)
+  // Para esfera oca interna, use -0.67 ao invés de -1.5
+  
   var ri: f32;
   if (frontface) {
-    // Ray entering the material (air -> glass)
-    ri = 1.0 / refraction_index;  // e.g., 1.0/1.5 for air->glass
+    // Ray hitting the front face (entering material)
+    // Transição do meio externo para o material da esfera
+    ri = 1.0 / refraction_index;
   } else {
-    // Ray exiting the material (glass -> air)
-    ri = refraction_index;  // e.g., 1.5 for glass->air
+    // Ray hitting the back face (exiting material)
+    // Transição do material da esfera para o meio externo
+    ri = refraction_index;
   }
 
   var unit_direction = normalize(r_direction);
@@ -285,11 +294,9 @@ fn dielectric(normal : vec3f, r_direction: vec3f, refraction_index: f32, frontfa
   // Calculate angle between ray and normal
   // cos_theta tells us how perpendicular the ray hits the surface
   var cos = min(dot(-unit_direction, normal), 1.0);
-  var sin = sqrt(1.0 - cos * cos);  // Pythagorean identity
+  var sin = sqrt(1.0 - cos * cos);
 
   // Check for total internal reflection
-  // This happens when trying to go from dense->less dense at shallow angles
-  // Example: light can't escape water at angles > critical angle
   var cannot_refract = ri * sin > 1.0;
   var direction: vec3f;
 
@@ -301,11 +308,7 @@ fn dielectric(normal : vec3f, r_direction: vec3f, refraction_index: f32, frontfa
     direction = refract(unit_direction, normal, ri);
   }
 
-  // IMPORTANT: For clear glass, we should NOT add any fuzziness
-  // Only add fuzz for frosted glass effect
-  // For now, completely ignore fuzz for dielectrics to get clear glass
-  // If you want frosted glass later, use a very small value like fuzz * 0.01
-  
+  // For clear glass, no fuzziness
   return material_behaviour(true, normalize(direction));
 }
 
@@ -345,24 +348,20 @@ fn trace(r: ray, rng_state: ptr<function, u32>) -> vec3f
     
     if (record.object_material.x < 0.0) {
       // Dielectric (glass, water, etc.) - negative material.x value
-      var refraction_index = abs(record.object_material.x); // Use the absolute value as the refraction index
-      if (refraction_index < 1.1) {
+      var refraction_index = abs(record.object_material.x);
+      if (refraction_index < 0.1) {
         refraction_index = 1.5; // Default to glass if not specified
       }
       
-      // For clear glass, pass 0.0 as fuzz or a very small value
-      // Only use material.z for frosted glass effects
-      var glass_fuzz = 0.0; // For perfectly clear glass
-      // Uncomment the line below if you want slight frosting based on material.z
-      // var glass_fuzz = record.object_material.z * 0.01; 
+      // Para vidro transparente, sem fuzz
+      var glass_fuzz = 0.0;
       
       behaviour = dielectric(record.normal, r_.direction, refraction_index, record.frontface, glass_fuzz, rng_state);
 
       if (behaviour.scatter) {
-        // Glass should be mostly clear - don't tint the light passing through
-        // For colored glass, you can add a small tint
-        // color *= record.object_color.xyz; // For colored glass
-        // For clear glass, don't modify the color at all
+        // Para vidro transparente, não modifique a cor
+        // Para vidro colorido, descomente a linha abaixo:
+        // color *= record.object_color.xyz;
         r_ = ray(record.p, behaviour.direction);
       } else {
         break;
@@ -370,19 +369,42 @@ fn trace(r: ray, rng_state: ptr<function, u32>) -> vec3f
 
     } else if (record.object_material.x > 0.0) {
       // Metal - positive material.x value
+      // material.y = reflectivity (0.0 - 1.0)
+      //   - 1.0 = espelho perfeito (100% reflexivo)
+      //   - 0.95 = espelho realista (95% reflexivo)
+      //   - 0.5-0.8 = metal colorido (ouro, cobre, bronze)
+      //   - 0.0-0.5 = metal com forte tinting
+      // material.z = fuzz/roughness (0.0 = liso, 0.5 = rugoso)
+      
       var fuzz = record.object_material.z;
+      var reflectivity = record.object_material.y;
       
       // Clamp fuzz to reasonable values for realistic metals
-      // Most metals should have fuzz between 0.0 (mirror) and 0.3 (brushed metal)
       fuzz = clamp(fuzz, 0.0, 0.5);
+      
+      // Default reflectivity to 1.0 if not set (espelho perfeito)
+      if (reflectivity < 0.01) {
+        reflectivity = 1.0;
+      }
 
       // Calculate metal reflection
       var metal_behaviour = metal(record.normal, r_.direction, fuzz, rng_next_vec3_in_unit_sphere(rng_state));
 
       if (metal_behaviour.scatter) {
-        // IMPORTANT: Metals should use their own color, not blend with white
-        // Pure metals reflect with their own color
-        color *= record.object_color.xyz;
+        // Sistema flexível de reflexão baseado em reflectivity
+        if (reflectivity >= 0.99) {
+          // Espelho perfeito - sem absorção
+          // color permanece inalterado (100% reflexivo)
+        } else if (reflectivity >= 0.9) {
+          // Metal muito reflexivo - absorção mínima
+          color *= vec3(reflectivity);
+        } else {
+          // Metal colorido - mistura cor do objeto com branco
+          // Quanto maior reflectivity, mais próximo de branco (mais reflexivo)
+          var metal_albedo = mix(record.object_color.xyz, vec3(1.0), reflectivity);
+          color *= metal_albedo;
+        }
+        
         r_ = ray(record.p, metal_behaviour.direction);
       } else {
         break;
@@ -425,22 +447,16 @@ fn render(@builtin(global_invocation_id) id : vec3u)
   var cam = get_camera(lookfrom, lookat, vec3(0.0, 1.0, 0.0), uniforms[10], 1.0, uniforms[6], uniforms[5]);
   var samples_per_pixel = i32(uniforms[4]);
 
-  var color = vec3(0.0); // Initialize to black, not random
-
-  // Steps:
-  // 1. Loop for each sample per pixel
-  // 2. Get ray
-  // 3. Call trace function
-  // 4. Average the color
+  var color = vec3(0.0);
 
   for (var s = 0; s < samples_per_pixel; s = s + 1)
   {
     var r = get_ray(cam, uv, &rng_state);
     var tracer = trace(r, &rng_state);
-    color += tracer; // Accumulate, don't use mean function
+    color += tracer;
   }
 
-  color /= f32(samples_per_pixel); // Average by dividing by sample count
+  color /= f32(samples_per_pixel);
 
   var map_fb = mapfb(id.xy, rez);
 
@@ -450,7 +466,7 @@ fn render(@builtin(global_invocation_id) id : vec3u)
   if (should_accumulate > 0.0) {
     rtfb[map_fb] += vec4(color, 1.0);
     color_out = vec4(rtfb[map_fb].xyz / rtfb[map_fb].w, 1.0);
-  } //xyz representa rgb e w alpha 
+  }
   else
   {
     rtfb[map_fb] = vec4(color, 1.0);
