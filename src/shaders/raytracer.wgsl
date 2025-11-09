@@ -195,7 +195,7 @@ fn check_ray_collision(r: ray, max: f32) -> hit_record
   }
 
   // Test all boxes
-  for (var i = 0; i < quadsCount; i = i + 1)
+  for (var i = 0; i < boxesCount; i = i + 1)
   {
     var box = boxesb[i];
     var temp_record = hit_record(RAY_TMAX, vec3f(0.0), vec3f(0.0), vec4f(0.0), vec4f(0.0), false, false);
@@ -255,44 +255,26 @@ fn metal(normal : vec3f, direction: vec3f, fuzz: f32, random_sphere: vec3f) -> m
 }
 
 // Schlick's approximation for Fresnel reflectance
-// Calculates how much light reflects vs refracts at different angles
-// Glass reflects more at grazing angles (like looking at a window from the side)
 fn fresnel_schlick(cos: f32, ref_idx: f32) -> f32
 {
-  // R0 is the reflectance at normal incidence (looking straight at surface)
   var r0 = (1.0 - ref_idx) / (1.0 + ref_idx);
   r0 = r0 * r0;
-  // Schlick's polynomial approximation: R(θ) = R0 + (1-R0)(1-cos(θ))^5
   return r0 + (1.0 - r0) * pow((1.0 - cos), 5.0);
 }
 
 // Dielectric material (glass, water, diamond, etc.)
-// Handles both reflection and refraction based on physics
-// CORRIGIDO: Agora suporta esferas ocas corretamente
 fn dielectric(normal : vec3f, r_direction: vec3f, refraction_index: f32, frontface: bool, fuzz: f32, rng_state: ptr<function, u32>) -> material_behaviour
 {
-  // CORREÇÃO PRINCIPAL: Para esfera oca de vidro
-  // - Esfera externa: refraction_index = 1.5 (vidro normal)
-  // - Esfera interna: refraction_index = 1.0/1.5 = 0.67 (transição vidro->ar)
-  
-  // O índice de refração é passado como material.x (negativo para dielétrico)
-  // Para esfera oca interna, use -0.67 ao invés de -1.5
-  
   var ri: f32;
   if (frontface) {
-    // Ray hitting the front face (entering material)
-    // Transição do meio externo para o material da esfera
+    // Ray entering the material (air -> glass)
     ri = 1.0 / refraction_index;
   } else {
-    // Ray hitting the back face (exiting material)
-    // Transição do material da esfera para o meio externo
+    // Ray exiting the material (glass -> air)
     ri = refraction_index;
   }
 
   var unit_direction = normalize(r_direction);
-
-  // Calculate angle between ray and normal
-  // cos_theta tells us how perpendicular the ray hits the surface
   var cos = min(dot(-unit_direction, normal), 1.0);
   var sin = sqrt(1.0 - cos * cos);
 
@@ -301,14 +283,13 @@ fn dielectric(normal : vec3f, r_direction: vec3f, refraction_index: f32, frontfa
   var direction: vec3f;
 
   if (cannot_refract || fresnel_schlick(cos, ri) > rng_next_float(rng_state)) {
-    // Reflect: Either total internal reflection, or random Fresnel reflection
+    // Reflect
     direction = reflect(unit_direction, normal);
   } else {
-    // Refract: Ray bends according to Snell's law
+    // Refract
     direction = refract(unit_direction, normal, ri);
   }
 
-  // For clear glass, no fuzziness
   return material_behaviour(true, normalize(direction));
 }
 
@@ -347,66 +328,50 @@ fn trace(r: ray, rng_state: ptr<function, u32>) -> vec3f
     }
     
     if (record.object_material.x < 0.0) {
-      // Dielectric (glass, water, etc.) - negative material.x value
+      // DIELECTRIC (glass) - material.x negative
       var refraction_index = abs(record.object_material.x);
       if (refraction_index < 0.1) {
-        refraction_index = 1.5; // Default to glass if not specified
+        refraction_index = 1.5; // Default to glass
       }
       
-      // Para vidro transparente, sem fuzz
-      var glass_fuzz = 0.0;
-      
-      behaviour = dielectric(record.normal, r_.direction, refraction_index, record.frontface, glass_fuzz, rng_state);
+      behaviour = dielectric(record.normal, r_.direction, refraction_index, record.frontface, 0.0, rng_state);
 
       if (behaviour.scatter) {
-        // Para vidro transparente, não modifique a cor
-        // Para vidro colorido, descomente a linha abaixo:
-        // color *= record.object_color.xyz;
+        // CORREÇÃO CRÍTICA: Aplicar atenuação de cor para vidro colorido
+        // A cor do vidro filtra a luz que passa através dele
+        color *= record.object_color.xyz;
         r_ = ray(record.p, behaviour.direction);
       } else {
         break;
       }
 
     } else if (record.object_material.x > 0.0) {
-      // Metal - positive material.x value
-      // material.y = reflectivity/fuzz control (varies by scene)
-      // material.z = fuzz/roughness (0.0 = liso, 1.0 = muito rugoso)
-
+      // METAL - material.x positive
       var fuzz_raw = record.object_material.z;
       var param_y = record.object_material.y;
 
-      // Intelligently determine fuzz value
-      // Use material.y as the primary fuzz controller if material.z is maxed out
       var fuzz: f32;
       if (fuzz_raw > 0.9) {
-        // When material.z is high (0.9-1.0), use material.y as fuzz controller
         fuzz = param_y;
       } else {
-        // Otherwise use material.z directly
         fuzz = fuzz_raw;
       }
 
-      // Clamp fuzz to prevent unrealistic values
-      // 0.0 = perfect mirror, 0.3 = slightly rough metal, 0.5 = very rough
       fuzz = clamp(fuzz, 0.0, 0.5);
 
-      // Calculate metal reflection
       var metal_behaviour = metal(record.normal, r_.direction, fuzz, rng_next_vec3_in_unit_sphere(rng_state));
 
       if (metal_behaviour.scatter) {
-        // For metals, apply the object color as tint
-        // Less fuzz = more reflective appearance
-        var reflectance = 1.0 - fuzz * 0.5;
-        var metal_albedo = mix(record.object_color.xyz, vec3(1.0), reflectance);
-        color *= metal_albedo;
-
+        // CORREÇÃO CRÍTICA: Para metais, aplicar a cor do objeto diretamente
+        // Metais refletem a luz mas mantêm sua própria cor característica
+        color *= record.object_color.xyz;
         r_ = ray(record.p, metal_behaviour.direction);
       } else {
         break;
       }
 
     } else {
-      // Lambertian (diffuse) - material.x == 0.0
+      // LAMBERTIAN (diffuse) - material.x == 0.0
       behaviour = lambertian(record.normal, record.object_material.y, rng_next_vec3_in_unit_sphere(rng_state), rng_state);
 
       if (behaviour.scatter) {
